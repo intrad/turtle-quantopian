@@ -667,3 +667,7 @@ def detect_entry_signals(context, data):
                             context.price
                         )
                     )
+
+   for position in context.portfolio.position:
+        if position[market].amount !=0
+                 

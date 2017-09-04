@@ -565,51 +565,43 @@ def place_stop_orders(context, data):
         amount = context.portfolio.positions[position].amount
         check_if_filled = get_order(context.orders[position.root_symbol][-1])
 
-        if check_if_filled.filled != 0:
+        if (check_if_filled.filled != 0 and check_if_filled.limit is not None)\
+           or (check_if_filled.status == 2 and check_if_filled.stop is not None):     #This makes use the context.orders chain 
+
+            if check_if_filled.limit is not None:
+                current_highest_price = check_if_filled.limit
+            elif check_if_filled.stop is not None:
+                current_highest_price = check_if_filled.stop
+
+            try:
+                context.price = context.prices.loc[market, 'close'][-1]
+            except KeyError:
+                context.price = 0
+
+            if amount > 0:
+                context.stop[market] = current_highest_price\
+                - context.average_true_range[market]\
+                * context.stop_multiplier
+
+                order_identifier = order_target(
+                    position,
+                    amount,
+                    style=StopOrder(context.stop[market])
+                )
+            elif amount < 0:
+                context.stop[market] = current_highest_price\
+                    + context.average_true_range[market]\
+                    * context.stop_multiplier
             
+                order_identifier = order_target(
+                    position,
+                    -amount,
+                    style=StopOrder(context.stop[market])
+                )
 
-
-
-
-        try:
-            context.price = context.prices.loc[market, 'close'][-1]
-        except KeyError:
-            context.price = 0
-
-        if not context.has_stop[market]:
-            if amount > 0 and context.price >= cost_basis:
-                context.stop[market] = context.price\
-                    - context.average_true_range[market]\
-                    * context.stop_multiplier
-            elif amount > 0 and context.price < cost_basis:
-                context.stop[market] = cost_basis\
-                    - context.average_true_range[market]\
-                    * context.stop_multiplier
-            elif amount > 0 and context.price == 0:
-                context.stop[market] = cost_basis\
-                    - context.average_true_range[market]\
-                    * context.stop_multiplier
-            elif amount < 0 and context.price >= cost_basis:
-                context.stop[market] = cost_basis\
-                    + context.average_true_range[market]\
-                    * context.stop_multiplier
-            elif amount < 0 and context.price < cost_basis:
-                context.stop[market] = context.price\
-                    + context.average_true_range[market]\
-                    * context.stop_multiplier
-            elif amount < 0 and context.price == 0:
-                context.stop[market] = cost_basis\
-                    + context.average_true_range[market]\
-                    * context.stop_multiplier
-
-            order_identifier = order_target(
-                position,
-                0,
-                style=StopOrder(context.stop[market])
-            )
+            
             if order_identifier is not None:
                 context.orders[market].append(order_identifier)
-                context.has_stop[market] = True
 
             if context.is_info:
                 log.info(

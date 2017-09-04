@@ -620,8 +620,28 @@ def detect_entry_signals(context, data):
     for market in context.prices.axes[0]:
         context.price = data.current(market, 'price')
 
-        if context.price > context.strat_one_breakout_high[market]\
-        or context.price > context.strat_two_breakout_high[market]:
+        if context.price > context.strat_one_breakout_high[market]:
+            if is_trade_allowed(context, market, context.long_direction):
+                order_identifier = order(
+                    context.contract,
+                    context.trade_size[market],
+                    style=LimitOrder(context.price)
+                )
+
+                if order_identifier is not None:
+                    context.orders[market].append(order_identifier)
+
+                if context.is_info:
+                    log.info(
+                        'Long %s %i@%.2f'
+                        % (
+                            market.root_symbol,
+                            context.trade_size[market],
+                            context.price
+                        )
+                    ) 
+
+        elif context.price > context.strat_two_breakout_high[market]:
             if is_trade_allowed(context, market, context.long_direction):
                 order_identifier = order(
                     context.contract,
@@ -641,8 +661,8 @@ def detect_entry_signals(context, data):
                             context.price
                         )
                     )
-        elif context.price < context.strat_one_breakout_low[market]\
-        or   context.price < context.strat_two_breakout_low[market]:
+
+        elif context.price < context.strat_one_breakout_low[market]:
             if is_trade_allowed(context, market, context.short_direction):
                 order_identifier = order(
                     context.contract,
@@ -662,12 +682,38 @@ def detect_entry_signals(context, data):
                             context.price
                         )
                     )
+
+        elif   context.price < context.strat_two_breakout_low[market]:
+            if is_trade_allowed(context, market, context.short_direction):
+                order_identifier = order(
+                    context.contract,
+                    -context.trade_size[market],
+                    style=LimitOrder(context.price)
+                )
+                context.is_strat_one
+                if order_identifier is not None:
+                    context.orders[market].append(order_identifier)
+
+                if context.is_info:
+                    log.info(
+                        'Short %s %i@%.2f'
+                        % (
+                            market.root_symbol,
+                            context.trade_size[market],
+                            context.price
+                        )
+                    )
+
 #Exit Strategy
    for position in context.portfolio.position:
         if position[market].amount >0
             if price > context.strat_one_exit_low[market] 
-                order_target_percent(context.portfolio,0)       
-        
+                order_target_percent(context.portfolio,0)
+            elif price > context.strat_two_exit_low[market]       
+                order_target_percent(context.portfolio,0)
+
         elif position[market].amount<0
-           if price < context.strat_one_exit_high[market] 
-                order_target_percent)context.portfolio,0) 
+            if price < context.strat_one_exit_high[market] 
+                order_target_percent(context.portfolio,0) 
+            elif price < context.strat_two_exit_high[market]
+                order_target_percent(context.portfolio,0)

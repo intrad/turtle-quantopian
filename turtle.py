@@ -63,13 +63,15 @@ def initialize(context):
     context.strat_one_exit = 10
     context.strat_one_exit_high = {}
     context.strat_one_exit_low = {}
-
+    context.is_strat_one = {}
+    
     context.strat_two_breakout = 55
     context.strat_two_breakout_high = {}
     context.strat_two_breakout_low = {}
     context.strat_two_exit = 20
     context.strat_two_exit_high = {}
     context.strat_two_exit_low = {}
+    context.is_strat_two = {}
 
     # Risk
     context.price_threshold = 1
@@ -648,13 +650,14 @@ def detect_entry_signals(context, data):
                         )
                     )
         elif context.price < context.strat_one_breakout_low[market]\
-        or context.price < context.strat_two_breakout_low[market]:
+        or   context.price < context.strat_two_breakout_low[market]:
             if is_trade_allowed(context, market, context.short_direction):
                 order_identifier = order(
                     context.contract,
                     -context.trade_size[market],
                     style=LimitOrder(context.price)
                 )
+                context.is_strat_one
                 if order_identifier is not None:
                     context.orders[market].append(order_identifier)
 
@@ -667,7 +670,12 @@ def detect_entry_signals(context, data):
                             context.price
                         )
                     )
-
+#Exit Strategy
    for position in context.portfolio.position:
-        if position[market].amount !=0
-                 
+        if position[market].amount >0
+            if price > context.strat_one_exit_low[market] 
+                order_target_percent(context.portfolio,0)       
+        
+        elif position[market].amount<0
+           if price < context.strat_one_exit_high[market] 
+                order_target_percent)context.portfolio,0) 

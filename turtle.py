@@ -567,7 +567,7 @@ def place_stop_orders(context, data):
 
         if (order_info.filled != 0 and order_info.limit is not None):     #If the previous order is a limit order that starts to be filled
 
-            current_highest_price = order_info.limit
+            current_highest_price = order_info.limit                     
 
             try:
                 context.price = context.prices.loc[market, 'close'][-1]
@@ -608,7 +608,12 @@ def place_stop_orders(context, data):
                     )
                 )
 
-        elif order_info.stop_reached == False and order_info.status == 2:    # If stop order is created but canceled due to end of day
+        elif (order_info.stop_reached == False and order_info.status == 2)\ 
+            order_info.stop_reached == True and amount != 0:   
+            """
+            first case: If stop order is created but canceled due to end of day
+            second case: (rare) stop loss is triggered before limit order is fully filled
+            """
             
             context.stop[market] = order_info.stop
 

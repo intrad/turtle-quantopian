@@ -64,7 +64,7 @@ def initialize(context):
     context.strat_one_exit_high = {}
     context.strat_one_exit_low = {}
     context.is_strat_one = {}
-    
+
     context.strat_two_breakout = 55
     context.strat_two_breakout_high = {}
     context.strat_two_breakout_low = {}
@@ -255,7 +255,7 @@ def get_prices(context, data):
 
     if context.is_test:
         assert(context.prices.shape[0] == 3)
-        
+
 
     # Tranpose/Reindex panel in axes with:
     # (Index: market, Major-axis: field, Minor-axis: date)
@@ -565,9 +565,10 @@ def place_stop_orders(context, data):
         amount = context.portfolio.positions[position].amount
         order_info = get_order(context.orders[position.root_symbol][-1])
 
-        if (order_info.filled != 0 and order_info.limit is not None):     #If the previous order is a limit order that starts to be filled
+        #If the previous order is a limit order that starts to be filled
+        if (order_info.filled != 0 and order_info.limit is not None):
 
-            current_highest_price = order_info.limit                     
+            current_highest_price = order_info.limit
 
             try:
                 context.price = context.prices.loc[market, 'close'][-1]
@@ -588,14 +589,16 @@ def place_stop_orders(context, data):
                 context.stop[market] = current_highest_price\
                     + context.average_true_range[market]\
                     * context.stop_multiplier
-            
+
                 order_identifier = order_target(
                     position,
                     -amount,
                     style=StopOrder(context.stop[market])
                 )
+            else:
+                order_identifier = None
 
-            
+
             if order_identifier is not None:
                 context.orders[market].append(order_identifier)
 
@@ -608,13 +611,13 @@ def place_stop_orders(context, data):
                     )
                 )
 
-        elif (order_info.stop_reached == False and order_info.status == 2)\ 
-            order_info.stop_reached == True and amount != 0:   
+        elif (order_info.stop_reached == False and order_info.status == 2)\
+            order_info.stop_reached == True and amount != 0:
             """
             first case: If stop order is created but canceled due to end of day
             second case: (rare) stop loss is triggered before limit order is fully filled
             """
-            
+
             context.stop[market] = order_info.stop
 
             try:
@@ -634,8 +637,10 @@ def place_stop_orders(context, data):
                     -amount,
                     style=StopOrder(context.stop[market])
                 )
+            else:
+                order_identifier = None
 
-            
+
             if order_identifier is not None:
                 context.orders[market].append(order_identifier)
 
@@ -676,7 +681,7 @@ def detect_entry_signals(context, data):
                             context.trade_size[market],
                             context.price
                         )
-                    ) 
+                    )
 
         elif context.price > context.strat_two_breakout_high[market]:
             if is_trade_allowed(context, market, context.long_direction):
@@ -744,13 +749,13 @@ def detect_entry_signals(context, data):
 #Exit Strategy
    for position in context.portfolio.position:
         if position[market].amount >0
-            if price > context.strat_one_exit_low[market] 
+            if price > context.strat_one_exit_low[market]
                 order_target_percent(context.portfolio,0)
-            elif price > context.strat_two_exit_low[market]       
+            elif price > context.strat_two_exit_low[market]
                 order_target_percent(context.portfolio,0)
 
         elif position[market].amount<0
-            if price < context.strat_one_exit_high[market] 
-                order_target_percent(context.portfolio,0) 
+            if price < context.strat_one_exit_high[market]
+                order_target_percent(context.portfolio,0)
             elif price < context.strat_two_exit_high[market]
                 order_target_percent(context.portfolio,0)

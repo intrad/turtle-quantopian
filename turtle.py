@@ -558,20 +558,16 @@ def update_risks(context, data):
 def place_stop_orders(context, data):
 # data is not used
     """
-    Place stop orders at 2 times average true range.
+    Place stop orders at 2 times average true range or continue a stop order that is canceled when market close.
     """
     for position in context.portfolio.positions:
         market = continuous_future(position.root_symbol)
         amount = context.portfolio.positions[position].amount
-        check_if_filled = get_order(context.orders[position.root_symbol][-1])
+        order_info = get_order(context.orders[position.root_symbol][-1])
 
-        if (check_if_filled.filled != 0 and check_if_filled.limit is not None)\
-           or (check_if_filled.status == 2 and check_if_filled.stop is not None):     #This makes use the context.orders chain 
+        if (order_info.filled != 0 and order_info.limit is not None):     #If the previous order is a limit order that starts to be filled
 
-            if check_if_filled.limit is not None:
-                current_highest_price = check_if_filled.limit
-            elif check_if_filled.stop is not None:
-                current_highest_price = check_if_filled.stop
+            current_highest_price = order_info.limit
 
             try:
                 context.price = context.prices.loc[market, 'close'][-1]
@@ -611,6 +607,42 @@ def place_stop_orders(context, data):
                         context.stop[market]
                     )
                 )
+
+        elif order_info.stop_reached == False and order_info.status == 2:    # If stop order is created but canceled due to end of day
+            
+            context.stop[market] = order_info.stop
+
+            try:
+                context.price = context.prices.loc[market, 'close'][-1]
+            except KeyError:
+                context.price = 0
+
+            if amount > 0:
+                order_identifier = order_target(
+                    position,
+                    amount,
+                    style=StopOrder(context.stop[market])
+                )
+            elif amount < 0:
+                order_identifier = order_target(
+                    position,
+                    -amount,
+                    style=StopOrder(context.stop[market])
+                )
+
+            
+            if order_identifier is not None:
+                context.orders[market].append(order_identifier)
+
+            if context.is_info:
+                log.info(
+                    'Stop %s %.2f'
+                    % (
+                        market.root_symbol,
+                        context.stop[market]
+                    )
+                )
+
 
 def detect_entry_signals(context, data):
 # data is not used

@@ -63,6 +63,7 @@ def initialize(context):
     context.strat_one_exit = 10
     context.strat_one_exit_high = {}
     context.strat_one_exit_low = {}
+    # Keyed by root symbol
     context.is_strat_one = {}
 
     context.strat_two_breakout = 55
@@ -71,6 +72,7 @@ def initialize(context):
     context.strat_two_exit = 20
     context.strat_two_exit_high = {}
     context.strat_two_exit_low = {}
+    # Keyed by root symbol
     context.is_strat_two = {}
 
     # Risk
@@ -669,9 +671,11 @@ def detect_entry_signals(context, data):
                     context.trade_size[market],
                     style=LimitOrder(context.price)
                 )
-
                 if order_identifier is not None:
                     context.orders[market].append(order_identifier)
+
+                context.is_strat_one[market] = True
+                context.is_strat_two[market] = False
 
                 if context.is_info:
                     log.info(
@@ -682,7 +686,6 @@ def detect_entry_signals(context, data):
                             context.price
                         )
                     )
-            context.is_strat_one=True
 
         elif context.price > context.strat_two_breakout_high[market]:
             if is_trade_allowed(context, market, context.long_direction):
@@ -691,9 +694,11 @@ def detect_entry_signals(context, data):
                     context.trade_size[market],
                     style=LimitOrder(context.price)
                 )
-
                 if order_identifier is not None:
                     context.orders[market].append(order_identifier)
+
+                context.is_strat_one[market] = False
+                context.is_strat_two[market] = True
 
                 if context.is_info:
                     log.info(
@@ -704,7 +709,6 @@ def detect_entry_signals(context, data):
                             context.price
                         )
                     )
-            context.is_strat_two=True
 
         elif context.price < context.strat_one_breakout_low[market]:
             if is_trade_allowed(context, market, context.short_direction):
@@ -713,9 +717,11 @@ def detect_entry_signals(context, data):
                     -context.trade_size[market],
                     style=LimitOrder(context.price)
                 )
-                context.is_strat_one
                 if order_identifier is not None:
                     context.orders[market].append(order_identifier)
+
+                context.is_strat_one = True
+                context.is_strat_two = False
 
                 if context.is_info:
                     log.info(
@@ -726,7 +732,8 @@ def detect_entry_signals(context, data):
                             context.price
                         )
                     )
-                context.is_strat_one=True
+
+
         elif   context.price < context.strat_two_breakout_low[market]:
             if is_trade_allowed(context, market, context.short_direction):
                 order_identifier = order(
@@ -737,6 +744,9 @@ def detect_entry_signals(context, data):
                 if order_identifier is not None:
                     context.orders[market].append(order_identifier)
 
+                context.is_strat_one = False
+                context.is_strat_two = True
+
                 if context.is_info:
                     log.info(
                         'Short %s %i@%.2f'
@@ -746,25 +756,31 @@ def detect_entry_signals(context, data):
                             context.price
                         )
                     )
-                context.is_strat_two=True
+
 #Exit Strategy
-    for position in context.portfolio.position:
-        if context.is_strat_one=True
-            if position[market].amount >0
-                if price = context.strat_one_exit_low[market]
-                order_target_percent(context.portfolio,0)
+    for position in context.portfolio.positions:
+        symbol = sid(position.sid).root_symbol
 
-            elif position[market].amount<0
-                if price = context.strat_one_exit_high[market]
-                order_target_percent(context.portfolio,0)
+        if context.is_strat_one[symbol]:
+            if position[market].amount > 0:
+                if context.price == context.strat_one_exit_low[market]:
+                    order_target_percent(context.portfolio, 0)
+                    context.is_strat_one[symbol] = False
+
+            elif position[market].amount< 0:
+                if price == context.strat_one_exit_high[market]:
+                    order_target_percent(context.portfolio, 0)
+                    context.is_strat_one[symbol] = False
 
 
-        elif context.is_strat_two=True
-            if position[market].amount >0
-                if price = context.strat_two_exit_low[market]
-                order_target_percent(context.portfolio,0)
+        elif context.is_strat_two[symbol]:
+            if context.position[market].amount > 0:
+                if context.price == context.strat_two_exit_low[market]:
+                    order_target_percent(context.portfolio, 0)
+                    context.is_strat_two[symbol] = False
 
-            elif position[market].amount<0
-                if price = context.strat_two_exit_high[market]
-                order_target_percent(context.portfolio,0)
+            elif position[market].amount < 0:
+                if context.price == context.strat_two_exit_high[market]:
+                    order_target_percent(context.portfolio, 0)
+                    context.is_strat_two[symbol] = False
 

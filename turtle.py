@@ -657,7 +657,7 @@ def place_stop_orders(context, data):
 def detect_entry_signals(context, data):
 # data is not used
     """
-    Place limit orders on 20 or 55 day breakout.
+      Place limit orders on 20 or 55 day breakout.
     """
     for market in context.prices.axes[0]:
         context.price = data.current(market, 'price')
@@ -681,8 +681,9 @@ def detect_entry_signals(context, data):
                             context.trade_size[market],
                             context.price
                         )
-                    )
-
+                    ) 
+            context.is_strat_one=True
+            
         elif context.price > context.strat_two_breakout_high[market]:
             if is_trade_allowed(context, market, context.long_direction):
                 order_identifier = order(
@@ -703,6 +704,7 @@ def detect_entry_signals(context, data):
                             context.price
                         )
                     )
+            context.is_strat_two=True
 
         elif context.price < context.strat_one_breakout_low[market]:
             if is_trade_allowed(context, market, context.short_direction):
@@ -724,7 +726,7 @@ def detect_entry_signals(context, data):
                             context.price
                         )
                     )
-
+                context.is_strat_one=True
         elif   context.price < context.strat_two_breakout_low[market]:
             if is_trade_allowed(context, market, context.short_direction):
                 order_identifier = order(
@@ -732,7 +734,6 @@ def detect_entry_signals(context, data):
                     -context.trade_size[market],
                     style=LimitOrder(context.price)
                 )
-                context.is_strat_one
                 if order_identifier is not None:
                     context.orders[market].append(order_identifier)
 
@@ -745,17 +746,25 @@ def detect_entry_signals(context, data):
                             context.price
                         )
                     )
-
+                context.is_strat_two=True
 #Exit Strategy
-   for position in context.portfolio.position:
-        if position[market].amount >0
-            if price > context.strat_one_exit_low[market]
+    for position in context.portfolio.position:
+        if context.is_strat_one=True 
+            if position[market].amount >0
+                if price = context.strat_one_exit_low[market] 
                 order_target_percent(context.portfolio,0)
-            elif price > context.strat_two_exit_low[market]
+                
+            elif position[market].amount<0
+                if price = context.strat_one_exit_high[market] 
+                order_target_percent(context.portfolio,0) 
+                
+
+        elif context.is_strat_two=True 
+            if position[market].amount >0
+                if price = context.strat_two_exit_low[market] 
                 order_target_percent(context.portfolio,0)
 
-        elif position[market].amount<0
-            if price < context.strat_one_exit_high[market]
-                order_target_percent(context.portfolio,0)
-            elif price < context.strat_two_exit_high[market]
-                order_target_percent(context.portfolio,0)
+            elif position[market].amount<0
+                if price = context.strat_two_exit_high[market] 
+                order_target_percent(context.portfolio,0) 
+                

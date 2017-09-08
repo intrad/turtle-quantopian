@@ -105,13 +105,6 @@ def initialize(context):
         context.market_risk[market] = 0
 
     schedule_function(
-        clear_stops,
-        date_rules.every_day(),
-        time_rules.market_open(minutes=1),
-        False
-    )
-
-    schedule_function(
         get_prices,
         date_rules.every_day(),
         time_rules.market_open(),
@@ -141,6 +134,13 @@ def initialize(context):
 
     schedule_function(
         log_risks,
+        date_rules.every_day(),
+        time_rules.market_close(minutes=1),
+        False
+    )
+
+    schedule_function(
+        clear_stops,
         date_rules.every_day(),
         time_rules.market_close(minutes=1),
         False
@@ -191,6 +191,13 @@ def initialize(context):
             time_rules.market_open(minutes=i),
             False
         )
+
+        schedule_function(
+            stop_trigger_cleanup,
+            date_rules.every_day(),
+            time_rules.market_open(minutes=i),
+        )
+
         if context.is_debug:
             schedule_function(
                 log_context,
@@ -205,13 +212,17 @@ def initialize(context):
 
 def clear_stops(context, data):
     """
-    Clear stops 1 minute after market open.
+    Clear stops 1 minute before market close.
     """
     if context.is_timed:
         start_time = time()
 
     for market in context.markets:
-        context.has_stop[market] = False
+        order_info = get_order(context.orders[market][-1])
+
+        if order_info.stop is not None and order_info.status == 0:
+            cancel_order(context.orders[market][-1])
+
 
     if context.is_timed:
         time_taken = (time() - start_time) * 1000
@@ -584,7 +595,7 @@ def place_stop_orders(context, data):
 
                 order_identifier = order_target(
                     position,
-                    amount,
+                    0,
                     style=StopOrder(context.stop[market])
                 )
             elif amount < 0:
@@ -594,7 +605,7 @@ def place_stop_orders(context, data):
 
                 order_identifier = order_target(
                     position,
-                    -amount,
+                    0,
                     style=StopOrder(context.stop[market])
                 )
             else:
@@ -613,11 +624,10 @@ def place_stop_orders(context, data):
                     )
                 )
 
-        elif (order_info.stop_reached == False and order_info.status == 2)\
-            order_info.stop_reached == True and amount != 0:
+        elif (order_info.stop_reached == False and\
+            order_info.stop is not None and order_info.status == 2):
             """
-            first case: If stop order is created but canceled due to end of day
-            second case: (rare) stop loss is triggered before limit order is fully filled
+            If stop order is created but canceled due to end of day
             """
 
             context.stop[market] = order_info.stop
@@ -630,13 +640,13 @@ def place_stop_orders(context, data):
             if amount > 0:
                 order_identifier = order_target(
                     position,
-                    amount,
+                    0,
                     style=StopOrder(context.stop[market])
                 )
             elif amount < 0:
                 order_identifier = order_target(
                     position,
-                    -amount,
+                    0,
                     style=StopOrder(context.stop[market])
                 )
             else:
@@ -784,3 +794,13 @@ def detect_entry_signals(context, data):
                     order_target_percent(context.portfolio, 0)
                     context.is_strat_two[symbol] = False
 
+def stop_trigger_cleanup(context,data)
+
+    for market in context.markets:
+        order_info = get_order(context.orders[market][-1])
+        
+        if order_info.stop_reached == True:
+            current_open_orders = get_open_orders(context.orders[market][-1].sid)
+
+            for order in current_open_orders:
+                cancel_order(order)

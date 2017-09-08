@@ -76,7 +76,6 @@ def initialize(context):
     context.is_strat_two = {}
 
     # Risk
-    context.price_threshold = 1
     context.capital = context.portfolio.starting_cash
     context.profit = 0
     context.capital_risk_per_trade = 0.01
@@ -233,7 +232,6 @@ def log_context(context, data):
     log.info('Porfolio cash: %.2f' % context.portfolio.cash)
     log.info('Capital: 		 %.2f' % context.capital)
     log.info('Prices: 		 %.2f' % context.price)
-    log.info(context.price_threshold)
     log.info(context.open_orders)
     log.info(context.market_risk)
 
@@ -413,47 +411,6 @@ def get_contracts(context, data):
         time_taken = (time() - start_time) * 1000
         log.debug('Executed in %f ms.' % time_taken)
         assert(time_taken < 1024)
-
-def is_trade_allowed(context, market, direction):
-    """
-    Check if allowed to trade.
-    """
-    if context.is_timed:
-        start_time = time()
-
-    is_trade_allowed = True
-
-    if context.portfolio.cash <= 0:
-        is_trade_allowed = False
-
-    if context.capital <= 0:
-        is_trade_allowed = False
-
-    # @Todo check WTF is price_threshold
-    if context.price < context.price_threshold:
-        is_trade_allowed = False
-
-    if context.open_orders:
-        if context.contracts[market] in context.open_orders:
-            is_trade_allowed = False
-
-    if context.market_risk[market] >= context.market_risk_limit:
-        is_trade_allowed = False
-
-    if direction == context.long_direction\
-            and context.long_risk >= context.direction_risk_limit:
-        is_trade_allowed = False
-
-    if direction == context.short_direction\
-            and context.short_risk >= context.direction_risk_limit:
-        is_trade_allowed = False
-
-    if context.is_timed:
-        time_taken = (time() - start_time) * 1000
-        log.debug('Executed in %f ms.' % time_taken)
-        assert(time_taken < 1024)
-
-    return is_trade_allowed
 
 def compute_average_true_ranges(context, data):
 # data is not used
@@ -657,11 +614,17 @@ def detect_entry_signals(context, data):
     """
       Place limit orders on 20 or 55 day breakout.
     """
+    long_quota = context.direction_risk_limit - math.ceil(context.long_risk)
+    short_quota = context.direction_risk_limit - math.ceil(context.short_risk)
+
     for market in context.prices.axes[0]:
         context.price = data.current(market, 'price')
 
+        if context.portfolio.cash <= 0 or context.capital <= (context.trade_size[market]*context.price):
+            continue
+
         if context.price > context.strat_one_breakout_high[market]:
-            if is_trade_allowed(context, market, context.long_direction):
+            if context.market_risk[market] == 0 and long_quota > 0:
                 order_identifier = order(
                     context.contract,
                     context.trade_size[market],
@@ -684,7 +647,7 @@ def detect_entry_signals(context, data):
                     )
 
         elif context.price > context.strat_two_breakout_high[market]:
-            if is_trade_allowed(context, market, context.long_direction):
+            if context.market_risk[market] == 0 and long_quota > 0:
                 order_identifier = order(
                     context.contract,
                     context.trade_size[market],
@@ -707,7 +670,7 @@ def detect_entry_signals(context, data):
                     )
 
         elif context.price < context.strat_one_breakout_low[market]:
-            if is_trade_allowed(context, market, context.short_direction):
+            if context.market_risk[market] == 0 and short_quota > 0:
                 order_identifier = order(
                     context.contract,
                     -context.trade_size[market],
@@ -731,7 +694,7 @@ def detect_entry_signals(context, data):
 
 
         elif   context.price < context.strat_two_breakout_low[market]:
-            if is_trade_allowed(context, market, context.short_direction):
+            if context.market_risk[market] == 0 and short_quota > 0:
                 order_identifier = order(
                     context.contract,
                     -context.trade_size[market],

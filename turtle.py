@@ -541,32 +541,18 @@ def update_risks(context, data):
     """
     Update long, short, and market risks.
     """
-    for market in context.orders:
-        for order_identifier in context.orders[market]:
-            a_order = get_order(order_identifier)
+    context.long_risk = 0
+    context.short_risk = 0
 
-            if a_order.status == context.filled:
-                if a_order.limit_reached:
-                    context.market_risk[market] += 1
+    for position in context.portfolio.positions:
+        market = sid(position.sid)
+        amount = position.amount
+        context.market_risk[market] = amount / context.trade_size[market]
 
-                    if a_order.amount > 0:
-                        context.long_risk += 1
-                    if a_order.amount < 0:
-                        context.short_risk += 1
-
-                if a_order.stop_reached:
-                    context.market_risk[market] -= 1
-
-                    if a_order.amount > 0:
-                        context.long_risk -= 1
-                    if a_order.amount < 0:
-                        context.short_risk -= 1
-
-                context.orders[market].remove(order_identifier)
-
-            if a_order.status == context.canceled\
-                    or a_order.status == context.rejected:
-                context.orders[market].remove(order_identifier)
+        if context.market_risk[market] > 0:
+            context.long_risk += abs(context.market_risk[market])
+        elif context.market_risk[market] < 0:
+            context.short_risk += abs(context.market_risk[market])
 
 def place_stop_orders(context, data):
 # data is not used

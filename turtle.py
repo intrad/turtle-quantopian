@@ -796,24 +796,24 @@ def detect_exit_signals(context, data):
 
         if context.is_strat_one[symbol]:
             if position[market].amount > 0:
-                if context.price == context.strat_one_exit_low[market]:
+                if context.price <= context.strat_one_exit_low[market]:
                     order_target_percent(context.portfolio, 0)
                     context.is_strat_one[symbol] = False
 
             elif position[market].amount< 0:
-                if price == context.strat_one_exit_high[market]:
+                if context.price >= context.strat_one_exit_high[market]:
                     order_target_percent(context.portfolio, 0)
                     context.is_strat_one[symbol] = False
 
 
         elif context.is_strat_two[symbol]:
             if context.position[market].amount > 0:
-                if context.price == context.strat_two_exit_low[market]:
+                if context.price <= context.strat_two_exit_low[market]:
                     order_target_percent(context.portfolio, 0)
                     context.is_strat_two[symbol] = False
 
             elif position[market].amount < 0:
-                if context.price == context.strat_two_exit_high[market]:
+                if context.price >= context.strat_two_exit_high[market]:
                     order_target_percent(context.portfolio, 0)
                     context.is_strat_two[symbol] = False
 
@@ -824,7 +824,10 @@ def scaling_signals(context,data):
             context.market_risk[market] != 0 and\
             abs(round(context.market_risk[market])) < context.market_risk_limit:
             """
-            First condition is to make sure this market did not enter breakout just now
+            First condition is to make sure this market did not enter breakout just now because the only reason that the lastest
+            order is a limit order is that the position is entered via breakout just now
+            
+            we make use of the latest order_id's stop price to determine the scaling signal
             """
 
             context.price = data.current(market, 'price')

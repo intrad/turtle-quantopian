@@ -1,5 +1,6 @@
 import math
 import numpy as np
+import pandas as pd
 from time import time
 from talib import ATR
 
@@ -97,11 +98,41 @@ def initialize(context):
     context.long_direction = 'long'
     context.short_direction = 'short'
 
+    # Was last entry signal winning trade initial status. the last trade before this algo runs:
+    context.previous_trade_won = {
+        'BP': False,
+        'CD': False,
+        'CL': False,
+        'ED': False,
+        'GC': False,
+        'HG': False,
+        'HO': False,
+        'HU': False,
+        'JY': False,
+        'SB': False,
+        'SF': False,
+        'SP': False,
+        'SV': False,
+        'TB': False,
+        'TY': False,
+        'US': False,
+        'CN': False,
+        'SY': False,
+        'WC': False,
+        'ES': False,
+        'NQ': False,
+        'YM': False,
+        'QM': False,
+        'FV': False,
+    }
+
+
     for market in context.markets:
         context.orders[market] = []
         context.stop[market] = 0
         context.has_stop[market] = False
         context.market_risk[market] = 0
+        context.position_analytics[market] = {'state' : 0, 'entry' : 0, 'stop' : 0, 'exit' : 0}
 
     schedule_function(
         get_prices,
@@ -210,6 +241,13 @@ def initialize(context):
         )
         schedule_function(
             detect_exit_signals,
+            date_rules.every_day(),
+            time_rules.market_open(minutes=i),
+            False
+        )
+
+        schedule_function(
+            analyzing_trade_for_next_signal,
             date_rules.every_day(),
             time_rules.market_open(minutes=i),
             False
@@ -641,7 +679,7 @@ def detect_entry_signals(context, data):
             continue
 
         if context.price > context.strat_one_breakout_high[market]:
-            if context.market_risk[market] == 0 and long_quota > 0 and\
+            if previous_trade_won == False and context.market_risk[market] == 0 and long_quota > 0 and\
                 get_order(context.orders[market][-1]).limit is None:
                 """
                 The third condition is to prevent the program to place another limit order after placing one during the last
@@ -701,7 +739,7 @@ def detect_entry_signals(context, data):
         elif context.price < context.strat_one_breakout_low[market] and\
                 get_order(context.orders[market][-1]).limit is None:
 
-            if context.market_risk[market] == 0 and short_quota > 0:
+            if previous_trade_won == False and context.market_risk[market] == 0 and short_quota > 0:
                 order_identifier = order(
                     market,
                     -context.trade_size[market],
@@ -780,11 +818,14 @@ def detect_exit_signals(context, data):
                     context.is_strat_two[symbol] = False
 
 def scaling_signals(context,data):
-"""
-This function need to be placed after place_stop_order
-"""
+
     for market in context.prices.axes[0]:
-        if context.market_risk[market] != 0 and abs(round(context.market_risk[market])) < context.market_risk_limit:
+        if get_order(context.orders[market][-1]).limit is None and\       
+            context.market_risk[market] != 0 and\
+            abs(round(context.market_risk[market])) < context.market_risk_limit:
+            """
+            First condition is to make sure this market did not enter breakout just now
+            """
 
             context.price = data.current(market, 'price')
 
@@ -839,3 +880,91 @@ def turn_limit_to_market_orders(context,data):
             cancel_order(order)
 
 
+def analyzing_trade_for_next_signal(context,data):
+
+    for market in context.prices.axes[0]:
+
+        context.price = data.current(market, 'price')
+        
+        if position_analytics[market]['state'] == 0:
+            if context.price > context.strat_one_breakout_high[market]:
+
+                position_analytics[market]['state'] = 1
+                position_analytics[market]['entry'] = context.price
+                position_analytics[market]['stop']  = context.price - 2 * context.average_true_range[market]
+                position_analytics[market]['exit']  = context.strat_one_exit_low[market]
+
+            elif context.price < context.strat_one_breakout_low[market]:
+
+                position_analytics[market]['state'] = 1
+                position_analytics[market]['entry'] = context.price
+                position_analytics[market]['stop']  = context.price + 2 * context.average_true_range[market]
+                position_analytics[market]['exit']  = context.strat_one_exit_high[market]
+            
+        elif 0 < position_analytics[market]['state'] and position_analytics[market]['state'] < 4 and\
+            context.price > position_analytics[market]['entry'] + 0.5 * context.average_true_range[market]:
+
+                position_analytics[market]['state'] + 1
+                position_analytics[market]['entry'] = context.price
+                position_analytics[market]['stop']  = context.price - 2 * context.average_true_range[market]
+                position_analytics[market]['exit']  = context.strat_one_exit_high[market]
+        
+        elif -4 < position_analytics[market]['state'] and position_analytics[market]['state'] < 0 and\
+            context.price < position_analytics[market]['entry'] - 0.5 * context.average_true_range[market]:
+
+                position_analytics[market]['state'] - 1
+                position_analytics[market]['entry'] = context.price
+                position_analytics[market]['stop']  = context.price + 2 * context.average_true_range[market]
+                position_analytics[market]['exit']  = context.strat_one_exit_low[market]
+        
+        elif position_analytics[market]['state'] > 0 and context.price < position_analytics[market]['stop'] or\
+            position_analytics[market]['state'] < 0 and context.price > position_analytics[market]['stop']:
+
+                position_analytics[market]['state'] = 0
+                position_analytics[market]['entry'] = 0
+                position_analytics[market]['stop']  = 0
+                position_analytics[market]['exit']  = 0
+        
+                previous_trade_won[market] = False
+                
+        elif position_analytics[market]['state'] > 0 and context.price < position_analytics[market]['exit']:
+        
+            profit = 0
+
+            x = 1
+                while x <= position_analytics[market]['state']:
+                    profit += position_analytics[market]['exit'] - \
+                              (position_analytics[market]['entry'] + (0.5) * (x-1) * context.average_true_range[market])
+                    x + 1
+
+            if profit > 0:
+                previous_trade_won[market] = True
+            elif profit < 0:
+                previous_trade_won[market] = False
+
+                position_analytics[market]['state'] = 0
+                position_analytics[market]['entry'] = 0
+                position_analytics[market]['stop']  = 0
+                position_analytics[market]['exit']  = 0
+
+
+        elif position_analytics[market]['state'] < 0 and context.price > position_analytics[market]['exit']:
+
+            profit = 0
+
+            x = 1
+                while x <= position_analytics[market]['state']:
+                    profit += (position_analytics[market]['entry'] - (0.5) * (x-1) * context.average_true_range[market]) - \
+                               position_analytics[market]['exit']
+                              
+                    x + 1
+
+            if profit > 0:
+                previous_trade_won[market] = True
+            elif profit < 0:
+                previous_trade_won[market] = False
+
+                position_analytics[market]['state'] = 0
+                position_analytics[market]['entry'] = 0
+                position_analytics[market]['stop']  = 0
+                position_analytics[market]['exit']  = 0

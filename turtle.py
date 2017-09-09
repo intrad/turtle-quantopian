@@ -651,7 +651,7 @@ def detect_entry_signals(context, data):
 
                 """
                 order_identifier = order(
-                    context.contract,
+                    market,
                     context.trade_size[market],
                     style=LimitOrder(context.price)
                 )
@@ -677,7 +677,7 @@ def detect_entry_signals(context, data):
 
             if context.market_risk[market] == 0 and long_quota > 0:
                 order_identifier = order(
-                    context.contract,
+                    market,
                     context.trade_size[market],
                     style=LimitOrder(context.price)
                 )
@@ -703,7 +703,7 @@ def detect_entry_signals(context, data):
 
             if context.market_risk[market] == 0 and short_quota > 0:
                 order_identifier = order(
-                    context.contract,
+                    market,
                     -context.trade_size[market],
                     style=LimitOrder(context.price)
                 )
@@ -730,7 +730,7 @@ def detect_entry_signals(context, data):
 
             if context.market_risk[market] == 0 and short_quota > 0:
                 order_identifier = order(
-                    context.contract,
+                    market,
                     -context.trade_size[market],
                     style=LimitOrder(context.price)
                 )
@@ -792,7 +792,7 @@ This function need to be placed after place_stop_order
                 if context.price > get_order(context.orders[market][-1]).stop + (2.5)*(context.average_true_range[market]):
 
                     order_identifier = order(
-                    context.contract,
+                    market,
                     context.trade_size[market],
                     style=LimitOrder(context.price)
                     )
@@ -805,7 +805,7 @@ This function need to be placed after place_stop_order
                 if context.price < get_order(context.orders[market][-1]).stop - (2.5) * (context.average_true_range[market]):
 
                     order_identifier = order(
-                    context.contract,
+                    market,
                     -context.trade_size[market],
                     style=LimitOrder(context.price)
                     )

@@ -145,6 +145,12 @@ def initialize(context):
         False
     )
 
+    schedule_function(
+        turn_limit_to_market_orders,                #make sure the limit orders are filled
+        date_rules.every_day(),
+        time_rules.market_close(minute=10)
+    )
+
     total_minutes = 6*60 + 30
 
     for i in range(30, total_minutes, 30):
@@ -185,16 +191,22 @@ def initialize(context):
             False
         )
         schedule_function(
+            scaling_signals,
+            date_rules.every_day(),
+            time_rules.market_open(minutes=i),
+            False
+        )
+        schedule_function(
             place_stop_orders,
             date_rules.every_day(),
             time_rules.market_open(minutes=i),
             False
         )
-
         schedule_function(
             stop_trigger_cleanup,
             date_rules.every_day(),
             time_rules.market_open(minutes=i),
+            False
         )
 
         if context.is_debug:
@@ -624,7 +636,15 @@ def detect_entry_signals(context, data):
             continue
 
         if context.price > context.strat_one_breakout_high[market]:
-            if context.market_risk[market] == 0 and long_quota > 0:
+            if context.market_risk[market] == 0 and long_quota > 0 and\
+                get_order(context.orders[market][-1]).limit is None:
+                """
+                The third condition is to prevent the program to place another limit order after placing one during the last
+                schedule function. If last order is limit order, it means a limit order is placed already. If last order is 
+                stop order, either it has stopped (then we enter), or the limit order is getting filled (This will violate the
+                first condition and order will not be placed).
+
+                """
                 order_identifier = order(
                     context.contract,
                     context.trade_size[market],
@@ -632,7 +652,8 @@ def detect_entry_signals(context, data):
                 )
                 if order_identifier is not None:
                     context.orders[market].append(order_identifier)
-
+                
+                long_quota - 1
                 context.is_strat_one[market] = True
                 context.is_strat_two[market] = False
 
@@ -646,7 +667,9 @@ def detect_entry_signals(context, data):
                         )
                     )
 
-        elif context.price > context.strat_two_breakout_high[market]:
+        elif context.price > context.strat_two_breakout_high[market] and\
+                get_order(context.orders[market][-1]).limit is None:
+
             if context.market_risk[market] == 0 and long_quota > 0:
                 order_identifier = order(
                     context.contract,
@@ -656,6 +679,7 @@ def detect_entry_signals(context, data):
                 if order_identifier is not None:
                     context.orders[market].append(order_identifier)
 
+                long_quota - 1
                 context.is_strat_one[market] = False
                 context.is_strat_two[market] = True
 
@@ -669,7 +693,9 @@ def detect_entry_signals(context, data):
                         )
                     )
 
-        elif context.price < context.strat_one_breakout_low[market]:
+        elif context.price < context.strat_one_breakout_low[market] and\
+                get_order(context.orders[market][-1]).limit is None:
+
             if context.market_risk[market] == 0 and short_quota > 0:
                 order_identifier = order(
                     context.contract,
@@ -679,6 +705,7 @@ def detect_entry_signals(context, data):
                 if order_identifier is not None:
                     context.orders[market].append(order_identifier)
 
+                short_quota - 1
                 context.is_strat_one = True
                 context.is_strat_two = False
 
@@ -693,7 +720,9 @@ def detect_entry_signals(context, data):
                     )
 
 
-        elif   context.price < context.strat_two_breakout_low[market]:
+        elif   context.price < context.strat_two_breakout_low[market] and\
+                get_order(context.orders[market][-1]).limit is None:
+
             if context.market_risk[market] == 0 and short_quota > 0:
                 order_identifier = order(
                     context.contract,
@@ -703,6 +732,7 @@ def detect_entry_signals(context, data):
                 if order_identifier is not None:
                     context.orders[market].append(order_identifier)
 
+                short_quota - 1
                 context.is_strat_one = False
                 context.is_strat_two = True
 
@@ -743,6 +773,40 @@ def detect_entry_signals(context, data):
                     order_target_percent(context.portfolio, 0)
                     context.is_strat_two[symbol] = False
 
+def scaling_signals(context,data) 
+"""
+This function need to be placed after place_stop_order
+"""
+    for market in context.prices.axes[0]:
+        if context.market_risk[market] != 0 and abs(round(context.market_risk[market])) < context.market_risk_limit:
+
+            context.price = data.current(market, 'price')
+
+            if context.market_risk[market] > 0:
+                if context.price > get_order(context.orders[market][-1]).stop + (2.5)*(context.average_true_range[market]):
+
+                    order_identifier = order(
+                    context.contract,
+                    context.trade_size[market],
+                    style=LimitOrder(context.price)
+                    )
+
+                    if order_identifier is not None:
+                        context.orders[market].append(order_identifier)
+                    
+
+            elif context.market_risk[market] < 0:
+                if context.price < get_order(context.orders[market][-1]).stop - (2.5) * (context.average_true_range[market]): 
+                
+                    order_identifier = order(
+                    context.contract,
+                    -context.trade_size[market],
+                    style=LimitOrder(context.price)
+                    )
+
+                    if order_identifier is not None:
+                        context.orders[market].append(order_identifier)
+
 def stop_trigger_cleanup(context,data)
 
     for market in context.markets:
@@ -753,3 +817,19 @@ def stop_trigger_cleanup(context,data)
 
             for order in current_open_orders:
                 cancel_order(order)
+
+def turn_limit_to_market_orders(context,data)
+
+    open_orders = get_open_orders
+
+    for order in open_orders:
+        open_order = get_order(order)
+        if open_order.limit is not None:
+            order_identifier = order(sid(open_order.sid) , (open_order.amount - open_order.filled))
+
+            if order_identifier is not None:
+                context.orders[sid(open_order.sid).root_symbol].append(order_identifier)
+         
+            cancel_order(order)
+            
+

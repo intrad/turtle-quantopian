@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from time import time
 from talib import ATR
+#from zipline.api import sid, order
 
 def initialize(context):
     """
@@ -43,19 +44,19 @@ def initialize(context):
         'QM',
         'FV',
     ]
-    context.markets = map(
-        lambda symbol: continuous_future(symbol),
-        context.symbols
-    )
 
-    context.price = None
+    # Use market symbols as key
+    # The rest of this algorithm follows this convention as well (should @TODO)
+    context.cfutures = {symbol: continuous_future(symbol , offset = 0, roll = 'calendar' , adjustment = 'mul') for symbol in context.symbols}
+
     context.prices = None
-    context.contract = None
     context.contracts = None
-    context.open_orders = None
     context.average_true_range = {}
     context.dollar_volatility = {}
     context.trade_size = {}
+    context.position_analytics = {}
+    context.future_to_symbol = {}
+    context.yesterday_auto_close_date = {}
 
     # Breakout signals
     context.strat_one_breakout = 20
@@ -99,98 +100,75 @@ def initialize(context):
     context.short_direction = 'short'
 
     # Was last entry signal winning trade initial status. the last trade before this algo runs:
-    context.previous_trade_won = {
-        'BP': False,
-        'CD': False,
-        'CL': False,
-        'ED': False,
-        'GC': False,
-        'HG': False,
-        'HO': False,
-        'HU': False,
-        'JY': False,
-        'SB': False,
-        'SF': False,
-        'SP': False,
-        'SV': False,
-        'TB': False,
-        'TY': False,
-        'US': False,
-        'CN': False,
-        'SY': False,
-        'WC': False,
-        'ES': False,
-        'NQ': False,
-        'YM': False,
-        'QM': False,
-        'FV': False,
-    }
+    context.previous_trade_won = {}
 
+    for symbol in context.symbols:
+        context.orders[symbol] = []
+        context.stop[symbol] = 0
+        context.has_stop[symbol] = False
+        context.market_risk[symbol] = 0
+        context.position_analytics[symbol] = {'state' : 0, 'entry' : 0, 'stop' : 0, 'exit' : 0}
+        # Move this out of loop after implementing check for initialization of prev-trade-won
+        context.previous_trade_won[symbol] = False
 
-    for market in context.markets:
-        context.orders[market] = []
-        context.stop[market] = 0
-        context.has_stop[market] = False
-        context.market_risk[market] = 0
-        context.position_analytics[market] = {'state' : 0, 'entry' : 0, 'stop' : 0, 'exit' : 0}
-
+    # Start of day functions
     schedule_function(
         get_prices,
         date_rules.every_day(),
         time_rules.market_open(),
         False
     )
-
     schedule_function(
         validate_prices,
         date_rules.every_day(),
         time_rules.market_open(),
         False
     )
-
     schedule_function(
         compute_highs,
         date_rules.every_day(),
         time_rules.market_open(),
         False
     )
-
     schedule_function(
         compute_lows,
         date_rules.every_day(),
         time_rules.market_open(),
         False
     )
-
+    schedule_function(
+        get_contracts,
+        date_rules.every_day(),
+        time_rules.market_open(),
+        False
+    )
+    schedule_function(
+        check_rollover,
+        date_rules.every_day(),
+        time_rules.market_open(),
+        False
+    )
+    # End of day functions
     schedule_function(
         log_risks,
         date_rules.every_day(),
         time_rules.market_close(minutes=1),
         False
     )
-
     schedule_function(
         clear_stops,
         date_rules.every_day(),
         time_rules.market_close(minutes=1),
         False
     )
-
     schedule_function(
-        turn_limit_to_market_orders,                #make sure the limit orders are filled
+        turn_limit_to_market_orders,      #make sure the limit orders are filled
         date_rules.every_day(),
-        time_rules.market_close(minute=10)
+        time_rules.market_close(minutes=25)
     )
 
     total_minutes = 6*60 + 30
-
     for i in range(30, total_minutes, 30):
-        schedule_function(
-            get_contracts,
-            date_rules.every_day(),
-            time_rules.market_open(minutes=i),
-            False
-        )
         schedule_function(
             compute_average_true_ranges,
             date_rules.every_day(),
@@ -245,25 +223,62 @@ def initialize(context):
             time_rules.market_open(minutes=i),
             False
         )
-
         schedule_function(
             analyzing_trade_for_next_signal,
             date_rules.every_day(),
             time_rules.market_open(minutes=i),
             False
         )
-        if context.is_debug:
-            schedule_function(
-                log_context,
-                date_rules.week_end(),
-                time_rules.market_close()
-            )
+
+    if context.is_debug:
+        schedule_function(
+            log_context,
+            date_rules.every_day(),
+            time_rules.market_close()
+        )
 
     if context.is_timed:
         time_taken = (time() - start_time) * 1000
         log.debug('Executed in %f ms.' % time_taken)
         assert(time_taken < 1024)
 
+def check_rollover(context, data):
+    """
+    see if the contract have rollovered
+    """
+    for sym in context.tradable_symbols:
+        current_auto_close_date = context.contracts[sym].auto_close_date
+               
+        try:
+            if current_auto_close_date != context.yesterday_auto_close_date[sym]:
+                previous_order = get_order(context.orders[sym][-1])
+                if previous_order.stop is not None and previous_order.status == context.canceled:
+                    price = data.current(context.cfutures[sym], 'price')
+                    order_identifier = order(
+                        context.contracts[sym],
+                        -previous_order.amount,
+                        style = LimitOrder(price)
+                    )
+
+                    if order_identifier is not None:
+                        context.orders[sym].append(order_identifier)
+
+                    log.info(
+                        'Long(rollover) %s %i@%.2f'
+                        %(
+                            sym,
+                            -previous_order.amount,
+                            price
+                        )
+                    )
+        except (KeyError, IndexError):
+            pass
+    
+        context.yesterday_auto_close_date[sym] = current_auto_close_date
+                  
+
+        
+        
 def clear_stops(context, data):
     """
     Clear stops 1 minute before market close.
@@ -271,11 +286,16 @@ def clear_stops(context, data):
     if context.is_timed:
         start_time = time()
 
-    for market in context.markets:
-        order_info = get_order(context.orders[market][-1])
+    for sym in context.tradable_symbols:
+        try:
+            order_info = get_order(context.orders[sym][-1])
+            unfilled_stop_price = order_info.stop
+        except IndexError:
+            continue
 
-        if order_info.stop is not None and order_info.status == 0:
-            cancel_order(context.orders[market][-1])
+        if unfilled_stop_price is not None and order_info.status == 0:
+            cancel_order(context.orders[sym][-1])
+            log.info( '%s  stop order canceled due to end of day' %(sym))
 
 
     if context.is_timed:
@@ -284,11 +304,21 @@ def clear_stops(context, data):
         assert(time_taken < 1024)
 
 def log_context(context, data):
-    log.info('Porfolio cash: %.2f' % context.portfolio.cash)
-    log.info('Capital: 		 %.2f' % context.capital)
-    log.info('Prices: 		 %.2f' % context.price)
-    log.info(context.open_orders)
-    log.info(context.market_risk)
+    log.info('Porfolio cash: %.2f \n' % context.portfolio.cash)
+    log.info('Capital:          %.2f \n' % context.capital)
+    for contract in context.contracts:
+        sym = contract.root_symbol
+        if sym in context.tradable_symbols:
+            position = context.portfolio.positions[contract]
+            log.info(
+                '%s  Position:%i  Trade Size:%.2f  Market Risk:%.2f'
+                %(
+                    sym,
+                    position.amount,
+                    context.trade_size[sym],
+                    context.market_risk[sym],
+                )
+            )
 
 def log_risks(context, data):
     """
@@ -306,28 +336,30 @@ def get_prices(context, data):
     if context.is_timed:
         start_time = time()
 
+    cfutures = [v for k, v in context.cfutures.items()]
     fields = ['high', 'low', 'close']
-    bars = strat_two_breakout + 1
+    bars = context.strat_two_breakout + 1
     frequency = '1d'
 
     # Retrieves a pandas panel with axes labelled as:
-    # (Index: field, Major-axis: date, Minor-axis: market)
+    # (Index: field, Major-axis: date, Minor-axis: symbol)
     context.prices = data.history(
-        context.markets,
+        cfutures,
         fields,
         bars,
         frequency
     )
-
+    
     if context.is_test:
         assert(context.prices.shape[0] == 3)
 
-
     # Tranpose/Reindex panel in axes with:
-    # (Index: market, Major-axis: field, Minor-axis: date)
+    # (Index: symbol, Major-axis: field, Minor-axis: date)
     context.prices = context.prices.transpose(2, 0, 1)
     context.prices = context.prices.reindex()
-
+    syms = {future: future.root_symbol for future in context.prices.axes[0]}
+    context.prices = context.prices.rename(items=syms)
+    
     if context.is_timed:
         time_taken = (time() - start_time) * 1000
         log.debug('Executed in %f ms.' % time_taken)
@@ -343,26 +375,19 @@ def validate_prices(context, data):
 
     context.prices.dropna(axis=0, inplace=True)
 
-    validated_markets = map(
-        lambda market: market.root_symbol,
-        context.prices.axes[0]
-    )
-
-    markets = map(
-        lambda market: market.root_symbol,
-        context.markets
-    )
+    validated_markets = context.prices.axes[0]
 
     dropped_markets = list(
-        set(markets) - set(validated_markets)
+        set(context.symbols) - set(validated_markets)
     )
+
+    context.tradable_symbols = validated_markets
 
     if context.is_debug and dropped_markets:
         log.debug(
             'Null prices for %s. Dropped.'
             % ', '.join(dropped_markets)
         )
-
 
     if context.is_timed:
         time_taken = (time() - start_time) * 1000
@@ -377,21 +402,21 @@ def compute_highs(context, data):
     if context.is_timed:
         start_time = time()
 
-    for market in context.prices.axes[0]:
-        context.strat_one_breakout_high[market] = context.prices\
-            .loc[market, 'high']\
+    for sym in context.tradable_symbols:
+        context.strat_one_breakout_high[sym] = context.prices\
+            .loc[sym, 'high']\
             [-context.strat_one_breakout-1:-1]\
             .max()
-        context.strat_two_breakout_high[market] = context.prices\
-            .loc[market, 'high']\
+        context.strat_two_breakout_high[sym] = context.prices\
+            .loc[sym, 'high']\
             [-context.strat_two_breakout-1:-1]\
             .max()
-        context.strat_one_exit_high[market] = context.prices\
-            .loc[market, 'high']\
+        context.strat_one_exit_high[sym] = context.prices\
+            .loc[sym, 'high']\
             [-context.strat_one_exit-1:-1]\
             .max()
-        context.strat_two_exit_high[market] = context.prices\
-            .loc[market, 'high']\
+        context.strat_two_exit_high[sym] = context.prices\
+            .loc[sym, 'high']\
             [-context.strat_two_exit-1:-1]\
             .max()
 
@@ -414,21 +439,21 @@ def compute_lows(context, data):
     if context.is_timed:
         start_time = time()
 
-    for market in context.prices.axes[0]:
-        context.strat_one_breakout_low[market] = context.prices\
-            .loc[market, 'low']\
+    for sym in context.tradable_symbols:
+        context.strat_one_breakout_low[sym] = context.prices\
+            .loc[sym, 'low']\
             [-context.strat_one_breakout-1:-1]\
             .min()
-        context.strat_two_breakout_low[market] = context.prices\
-            .loc[market, 'low']\
+        context.strat_two_breakout_low[sym] = context.prices\
+            .loc[sym, 'low']\
             [-context.strat_two_breakout-1:-1]\
             .min()
-        context.strat_one_exit_low[market] = context.prices\
-            .loc[market, 'low']\
+        context.strat_one_exit_low[sym] = context.prices\
+            .loc[sym, 'low']\
             [-context.strat_one_exit-1:-1]\
             .min()
-        context.strat_two_exit_low[market] = context.prices\
-            .loc[market, 'low']\
+        context.strat_two_exit_low[sym] = context.prices\
+            .loc[sym, 'low']\
             [-context.strat_two_exit-1:-1]\
             .min()
 
@@ -445,20 +470,26 @@ def compute_lows(context, data):
 
 def get_contracts(context, data):
     """
-    Get futures contracts.
+    Get futures contracts using the dict of continuous futures objects
+    The returned pd.panel from data.current() is reindex to use symbol string as key
     """
     if context.is_timed:
         start_time = time()
 
+    cfutures = [v for k, v in context.cfutures.items()]
     fields = 'contract'
 
+    # Dataframe indexed with date, and columned with security as according to API spec
     context.contracts = data.current(
-        context.markets,
+        cfutures,
         fields
     )
+    
+    context.contracts = context.contracts.transpose()
+    context.contracts.dropna(axis=0, inplace=True)
+    context.contracts = context.contracts.rename_axis(lambda k: k.root_symbol, axis=0)
 
-    context.open_orders = get_open_orders()
-
+        
     if context.is_test:
         assert(context.contracts.shape[0] > 0)
 
@@ -478,11 +509,11 @@ def compute_average_true_ranges(context, data):
     rolling_window = 21
     moving_average = 20
 
-    for market in context.prices.axes[0]:
-        context.average_true_range[market] = ATR(
-            context.prices.loc[market, 'high'][-rolling_window:],
-            context.prices.loc[market, 'low'][-rolling_window:],
-            context.prices.loc[market, 'close'][-rolling_window:],
+    for sym in context.tradable_symbols:
+        context.average_true_range[sym] = ATR(
+            context.prices.loc[sym, 'high'][-rolling_window:],
+            context.prices.loc[sym, 'low'][-rolling_window:],
+            context.prices.loc[sym, 'close'][-rolling_window:],
             timeperiod=moving_average
         )[-1]
 
@@ -502,13 +533,16 @@ def compute_dollar_volatilities(context, data):
     if context.is_timed:
         start_time = time()
 
-    for market in context.prices.axes[0]:
-        context.contract = context.contracts[market]
-        context.dollar_volatility[market] = context.contract.multiplier\
-            * context.average_true_range[market]
+    try:
+        for sym in context.tradable_symbols:
+            context.dollar_volatility[sym] = context.contracts[sym].multiplier\
+                * context.average_true_range[sym]
+    except KeyError:
+        pass
 
     if context.is_test:
-        assert(len(context.dollar_volatility) > 0)
+        #assert(len(context.dollar_volatility) > 0)
+        pass
 
     if context.is_timed:
         time_taken = (time() - start_time) * 1000
@@ -517,7 +551,7 @@ def compute_dollar_volatilities(context, data):
 
 def compute_trade_sizes(context, data):
 # data is not used
-    """
+    """contract
     Compute trade sizes, or amount per trade.
     """
     if context.is_timed:
@@ -531,17 +565,25 @@ def compute_trade_sizes(context, data):
             + context.profit\
             * context.capital_multiplier
 
-    if context.capital <= 0:
-        for market in context.prices.axes[0]:
-            context.trade_size[market] = 0
-    else:
-        for market in context.prices.axes[0]:
-            context.trade_size[market] = int(context.capital\
-                * context.capital_risk_per_trade\
-                / context.dollar_volatility[market])
+    try:
+        if context.capital <= 0:
+            for sym in context.tradable_symbols:
+                context.trade_size[sym] = 0
+        else:
+            for sym in context.tradable_symbols:
+                context.trade_size[sym] = int(context.capital\
+                    * context.capital_risk_per_trade\
+                    / context.dollar_volatility[sym])
+    except KeyError:
+        pass
+    except ZeroDivisionError:
+        log.info(sym)
+        log.info(context.dollar_volatility[sym])
+        raise
 
     if context.is_test:
-        assert(len(context.trade_size) > 0)
+        #assert(len(context.trade_size) > 0)
+        pass
 
     if context.is_timed:
         time_taken = (time() - start_time) * 1000
@@ -556,69 +598,76 @@ def update_risks(context, data):
     context.long_risk = 0
     context.short_risk = 0
 
-    for position in context.portfolio.positions:
-        market = sid(position.sid)
-        amount = position.amount
-        context.market_risk[market] = amount / context.trade_size[market]
+    for contract in context.contracts:
+        sym = contract.root_symbol
+        
+        try:
+            position = context.portfolio.positions[contract]
 
-        if context.market_risk[market] > 0:
-            context.long_risk += abs(context.market_risk[market])
-        elif context.market_risk[market] < 0:
-            context.short_risk += abs(context.market_risk[market])
+            if context.market_risk[sym] > 0:
+                context.long_risk += abs(context.market_risk[sym])
+            elif context.market_risk[sym] < 0:
+                context.short_risk += abs(context.market_risk[sym])
+        except KeyError:
+            continue
+        except ZeroDivisionError:
+            log.info(sym)
+            log.info(position.amount)
+            log.info(context.trade_size[sym])
+            log.info(context.dollar_volatility[sym])
+            raise
 
 def place_stop_orders(context, data):
 # data is not used
     """
     Place stop orders at 2 times average true range or continue a stop order that is canceled when market close.
     """
-    for position in context.portfolio.positions:
-        market = sid(position.sid)
-        amount = position.amount
-        order_info = get_order(context.orders[sid(position.sid).root_symbol][-1])
+    for contract in context.contracts:
+        sym = contract.root_symbol 
+        position = context.portfolio.positions[contract]
+
+        try:
+            order_info = get_order(context.orders[sym][-1])
+        except IndexError:
+            continue
 
         #If the previous order is a limit order that starts to be filled
         if (order_info.filled != 0 and order_info.limit is not None):
 
             current_highest_price = order_info.limit
 
-            try:
-                context.price = context.prices.loc[market, 'close'][-1]
-            except KeyError:
-                context.price = 0
-
-            if amount > 0:
-                context.stop[market] = current_highest_price\
-                - context.average_true_range[market]\
+            if position.amount > 0:
+                context.stop[sym] = current_highest_price\
+                - context.average_true_range[sym]\
                 * context.stop_multiplier
 
                 order_identifier = order_target(
-                    position,
+                    context.contracts[sym],
                     0,
-                    style=StopOrder(context.stop[market])
+                    style=StopOrder(context.stop[sym])
                 )
-            elif amount < 0:
-                context.stop[market] = current_highest_price\
-                    + context.average_true_range[market]\
+            elif position.amount < 0:
+                context.stop[sym] = current_highest_price\
+                    + context.average_true_range[sym]\
                     * context.stop_multiplier
 
                 order_identifier = order_target(
-                    position,
+                    context.contracts[sym],
                     0,
-                    style=StopOrder(context.stop[market])
+                    style=StopOrder(context.stop[sym])
                 )
             else:
                 order_identifier = None
 
-
             if order_identifier is not None:
-                context.orders[market].append(order_identifier)
+                context.orders[sym].append(order_identifier)
 
             if context.is_info:
                 log.info(
-                    'Stop %s %.2f'
+                    'Stop  %s  %.2f (due to new limit order)'
                     % (
-                        market.root_symbol,
-                        context.stop[market]
+                        sym,
+                        context.stop[sym]
                     )
                 )
 
@@ -628,40 +677,35 @@ def place_stop_orders(context, data):
             If stop order is created but canceled due to end of day
             """
 
-            context.stop[market] = order_info.stop
+            context.stop[sym] = order_info.stop
 
-            try:
-                context.price = context.prices.loc[market, 'close'][-1]
-            except KeyError:
-                context.price = 0
-
-            if amount > 0:
+            if position.amount > 0:
                 order_identifier = order_target(
-                    position,
+                    context.contracts[sym],
                     0,
-                    style=StopOrder(context.stop[market])
+                    style=StopOrder(context.stop[sym])
                 )
-            elif amount < 0:
+            elif position.amount < 0:
                 order_identifier = order_target(
-                    position,
+                    context.contracts[sym],
                     0,
-                    style=StopOrder(context.stop[market])
+                    style=StopOrder(context.stop[sym])
                 )
             else:
                 order_identifier = None
 
 
             if order_identifier is not None:
-                context.orders[market].append(order_identifier)
+                context.orders[sym].append(order_identifier)
 
-            if context.is_info:
-                log.info(
-                    'Stop %s %.2f'
-                    % (
-                        market.root_symbol,
-                        context.stop[market]
+                if context.is_info:
+                    log.info(
+                        'Stop  %s  %.2f (due to previous stop order canceled)'
+                        % (
+                            sym,
+                            context.stop[sym]
+                        )
                     )
-                )
 
 
 def detect_entry_signals(context, data):
@@ -672,302 +716,342 @@ def detect_entry_signals(context, data):
     long_quota = context.direction_risk_limit - math.ceil(context.long_risk)
     short_quota = context.direction_risk_limit - math.ceil(context.short_risk)
 
-    for market in context.prices.axes[0]:
-        context.price = data.current(market, 'price')
+    # Exit if we don't have any cash
+    if context.portfolio.cash <= 0:
+        return
 
-        if context.portfolio.cash <= 0 or context.capital <= (context.trade_size[market]*context.price):
-            continue
+    for sym in context.tradable_symbols:
+        price = data.current(context.cfutures[sym], 'price')
+        # Get limit price of previous order; if there is no previous order, set limit to None
+        try:
+            prev_order = get_order(context.orders[sym][-1])
+            limit = prev_order.limit
+        except IndexError:
+            limit = None
 
-        if context.price > context.strat_one_breakout_high[market]:
-            if previous_trade_won == False and context.market_risk[market] == 0 and long_quota > 0 and\
-                get_order(context.orders[market][-1]).limit is None:
-                """
-                The third condition is to prevent the program to place another limit order after placing one during the last
-                schedule function. If last order is limit order, it means a limit order is placed already. If last order is
-                stop order, either it has stopped (then we enter), or the limit order is getting filled (This will violate the
-                first condition and order will not be placed).
+        enter_signal = False
 
-                """
-                order_identifier = order(
-                    market,
-                    context.trade_size[market],
-                    style=LimitOrder(context.price)
-                )
-                if order_identifier is not None:
-                    context.orders[market].append(order_identifier)
+        if context.market_risk[sym] == 0 and limit is None:
+            if context.previous_trade_won[sym] == False:
+                if price > context.strat_one_breakout_high[sym] and long_quota > 0:
 
-                long_quota - 1
-                context.is_strat_one[market] = True
-                context.is_strat_two[market] = False
+                    long_quota -= 1
+                    enter_signal = True
+                    long_or_short = 1
+                    context.is_strat_one[sym] = True
+                    context.is_strat_two[sym] = False
+                    
 
-                if context.is_info:
+                elif price < context.strat_one_breakout_low[sym] and short_quota > 0:
+
+                    short_quota -= 1
+                    enter_signal = True
+                    long_or_short = -1
+                    context.is_strat_one[sym] = True
+                    context.is_strat_two[sym] = False
+
+            else:
+                if price > context.strat_two_breakout_high[sym] and long_quota > 0 :
+
+                    long_quota -= 1
+                    enter_signal = True
+                    long_or_short = 1
+                    context.is_strat_one[sym] = True
+                    context.is_strat_two[sym] = False
+
+                elif price < context.strat_two_breakout_low[sym] and short_quota > 0:
+
+                    short_quota -= 1
+                    enter_signal = True
+                    long_or_short = -1
+                    context.is_strat_one[sym] = True
+                    context.is_strat_two[sym] = False
+
+        if enter_signal == True:
+            order_identifier = order(
+                context.contracts[sym],
+                long_or_short * context.trade_size[sym],
+                style=LimitOrder(price)
+            )
+
+            context.market_risk[sym] = long_or_short
+
+            if order_identifier is not None:
+                context.orders[sym].append(order_identifier)
+
+            if context.is_info:
+
+                if context.is_strat_one[sym] == True:
+                    strat = "strat 1"
+                else:
+                    strat = "strat 2"
+                
+                if long_or_short == 1:
                     log.info(
-                        'Long %s %i@%.2f'
+                        'Long(breakout %s)  %s  %i@%.2f'
                         % (
-                            market.root_symbol,
-                            context.trade_size[market],
-                            context.price
+                            strat,
+                            sym,
+                            context.trade_size[sym],
+                            price
                         )
                     )
-
-        elif context.price > context.strat_two_breakout_high[market] and\
-                get_order(context.orders[market][-1]).limit is None:
-
-            if context.market_risk[market] == 0 and long_quota > 0:
-                order_identifier = order(
-                    market,
-                    context.trade_size[market],
-                    style=LimitOrder(context.price)
-                )
-                if order_identifier is not None:
-                    context.orders[market].append(order_identifier)
-
-                long_quota - 1
-                context.is_strat_one[market] = False
-                context.is_strat_two[market] = True
-
-                if context.is_info:
+                else:
                     log.info(
-                        'Long %s %i@%.2f'
+                        'Short(breakout %s)  %s  %i@%.2f'
                         % (
-                            market.root_symbol,
-                            context.trade_size[market],
-                            context.price
-                        )
-                    )
-
-        elif context.price < context.strat_one_breakout_low[market] and\
-                get_order(context.orders[market][-1]).limit is None:
-
-            if previous_trade_won == False and context.market_risk[market] == 0 and short_quota > 0:
-                order_identifier = order(
-                    market,
-                    -context.trade_size[market],
-                    style=LimitOrder(context.price)
-                )
-                if order_identifier is not None:
-                    context.orders[market].append(order_identifier)
-
-                short_quota - 1
-                context.is_strat_one[market] = True
-                context.is_strat_two[market] = False
-
-                if context.is_info:
-                    log.info(
-                        'Short %s %i@%.2f'
-                        % (
-                            market.root_symbol,
-                            context.trade_size[market],
-                            context.price
-                        )
-                    )
-
-
-        elif   context.price < context.strat_two_breakout_low[market] and\
-                get_order(context.orders[market][-1]).limit is None:
-
-            if context.market_risk[market] == 0 and short_quota > 0:
-                order_identifier = order(
-                    market,
-                    -context.trade_size[market],
-                    style=LimitOrder(context.price)
-                )
-                if order_identifier is not None:
-                    context.orders[market].append(order_identifier)
-
-                short_quota - 1
-                context.is_strat_one[market] = False
-                context.is_strat_two[market] = True
-
-                if context.is_info:
-                    log.info(
-                        'Short %s %i@%.2f'
-                        % (
-                            market.root_symbol,
-                            context.trade_size[market],
-                            context.price
+                            strat,
+                            sym,
+                            context.trade_size[sym],
+                            price
                         )
                     )
 
 #Exit Strategy
 def detect_exit_signals(context, data):
-    for position in context.portfolio.positions:
-        symbol = sid(position.sid).root_symbol
+    for pos_sid, position in context.portfolio.positions.items():
+        market = position.asset.root_symbol
 
-        if context.is_strat_one[symbol]:
-            if position[market].amount > 0:
-                if context.price <= context.strat_one_exit_low[market]:
-                    order_target_percent(context.portfolio, 0)
-                    context.is_strat_one[symbol] = False
+        price = data.current(market, 'price')
 
-            elif position[market].amount< 0:
-                if context.price >= context.strat_one_exit_high[market]:
-                    order_target_percent(context.portfolio, 0)
-                    context.is_strat_one[symbol] = False
+        if context.is_strat_one[market]:
+            if position.amount > 0:
+                if price <= context.strat_one_exit_low[market]:
+                    order_identifier = order_target_percent(context.contracts[market], 0)
+                    context.market_risk[sym] = 0
+                    if order_identifier is not None:
+                        context.orders[market].append(order_identifier)
+                    context.is_strat_one[market] = False
+                    log.info(
+                        'Exit  %s  @%.2f'
+                        % (
+                            market,
+                            price
+                        )
+                    )
+
+            elif position.amount< 0:
+                if price >= context.strat_one_exit_high[market]:
+                    order_identifier = order_target_percent(context.contracts[market], 0)
+                    context.market_risk[sym] = 0
+                    if order_identifier is not None:
+                        context.orders[market].append(order_identifier)
+                    context.is_strat_one[market] = False
+                    log.info(
+                        'Exit  %s  @%.2f'
+                        % (
+                            market,
+                            price
+                        )
+                    )
 
 
-        elif context.is_strat_two[symbol]:
-            if context.position[market].amount > 0:
-                if context.price <= context.strat_two_exit_low[market]:
-                    order_target_percent(context.portfolio, 0)
-                    context.is_strat_two[symbol] = False
+        elif context.is_strat_two[market]:
+            if position.amount > 0:
+                if price <= context.strat_two_exit_low[market]:
+                    order_identifier = order_target_percent(context.contracts[market], 0)
+                    context.market_risk[sym] = 0
+                    if order_identifier is not None:
+                        context.orders[market].append(order_identifier)
+                    context.is_strat_one[market] = False
+                    log.info(
+                        'Exit  %s  @%.2f'
+                        % (
+                            market,
+                            price
+                        )
+                    )
 
-            elif position[market].amount < 0:
-                if context.price >= context.strat_two_exit_high[market]:
-                    order_target_percent(context.portfolio, 0)
-                    context.is_strat_two[symbol] = False
+            elif position.amount < 0:
+                if price >= context.strat_two_exit_high[market]:
+                    order_identifier = order_target_percent(context.contracts[market], 0)
+                    context.market_risk[sym] = 0
+                    if order_identifier is not None:
+                        context.orders[market].append(order_identifier)
+                    context.is_strat_one[market] = False
+                    log.info(
+                        'Exit  %s  @%.2f'
+                        % (
+                            market,
+                            price
+                        )
+                    )
 
 def scaling_signals(context,data):
 
-    for market in context.prices.axes[0]:
-        if get_order(context.orders[market][-1]).limit is None and\       
-            context.market_risk[market] != 0 and\
+    for market in context.tradable_symbols:
+        if context.market_risk[market] != 0 and \
             abs(round(context.market_risk[market])) < context.market_risk_limit:
-            """
-            First condition is to make sure this market did not enter breakout just now because the only reason that the lastest
-            order is a limit order is that the position is entered via breakout just now
-            
-            we make use of the latest order_id's stop price to determine the scaling signal
-            """
+            if  get_order(context.orders[market][-1]).limit is None:
+                """
+                'the condition in second if' is to make sure this market did not enter breakout just now because the only reason that the lastest
+                order is a limit order is that the position is entered via breakout just now
 
-            context.price = data.current(market, 'price')
+                Also, we have to make use of the latest order_id's stop price to determine the scaling signal so we can
+                """
 
-            if context.market_risk[market] > 0:
-                if context.price > get_order(context.orders[market][-1]).stop + (2.5)*(context.average_true_range[market]):
+                price = data.current(context.cfutures[market], 'price')
+                # test if it is stop order. If it is not stop order as well, it is a market order from converting limit to market order by the end of the day
 
-                    order_identifier = order(
-                    market,
-                    context.trade_size[market],
-                    style=LimitOrder(context.price)
-                    )
-
-                    if order_identifier is not None:
-                        context.orders[market].append(order_identifier)
+                if get_order(context.orders[market][-1]).stop is None:
+                    continue
 
 
-            elif context.market_risk[market] < 0:
-                if context.price < get_order(context.orders[market][-1]).stop - (2.5) * (context.average_true_range[market]):
+                if context.market_risk[market] > 0:
+                    if price > get_order(context.orders[market][-1]).stop + (2.5)*(context.average_true_range[market]):
 
-                    order_identifier = order(
-                    market,
-                    -context.trade_size[market],
-                    style=LimitOrder(context.price)
-                    )
+                        order_identifier = order(
+                        context.contracts[market],
+                        context.trade_size[market],
+                        style=LimitOrder(price)
+                        )
+                        context.market_risk[sym] += 1
 
-                    if order_identifier is not None:
-                        context.orders[market].append(order_identifier)
+                        if order_identifier is not None:
+                            context.orders[market].append(order_identifier)
+                            
+                            log.info('long(scaling)  %s  %i@%.2f'
+                                     %(
+                                        market,
+                                        context.trade_size[market],
+                                        price
+                                    )
+                            )
+
+
+                elif context.market_risk[market] < 0:
+                    if price < get_order(context.orders[market][-1]).stop - (2.5) * (context.average_true_range[market]):
+
+                        order_identifier = order(
+                        context.contracts[market],
+                        -context.trade_size[market],
+                        style=LimitOrder(price)
+                        )
+                        context.market_risk[sym] -= 1
+
+                        if order_identifier is not None:
+                            context.orders[market].append(order_identifier)
+                            
+                            log.info('short(scaling)  %s  %i@%.2f'
+                                     %(
+                                        market,
+                                        context.trade_size[market],
+                                        price
+                                    )
+                            )
 
 def stop_trigger_cleanup(context,data):
 
-    for market in context.markets:
-        order_info = get_order(context.orders[market][-1])
+    for market in context.tradable_symbols:
+        try:
+            order_info = get_order(context.orders[market][-1])
+            stop_reached = order_info.stop_reached
+        except IndexError:
+            stop_reached = None
 
-        if order_info.stop_reached == True:
-            current_open_orders = get_open_orders(context.orders[market][-1].sid)
+        if stop_reached == True:
+            current_open_orders = get_open_orders(order_info.sid)
 
-            for order in current_open_orders:
-                cancel_order(order)
+            for open_order in current_open_orders:
+                cancel_order(open_order)
+            
+            context.market_risk[sym] = 0
+
 
 def turn_limit_to_market_orders(context,data):
+    unfilled_orders = get_open_orders()
 
-    open_orders = get_open_orders
+    for stocks, orders in unfilled_orders.items():
+        for unfilled_order in orders:
+            asset = unfilled_order.sid.root_symbol
 
-    for order in open_orders:
-        open_order = get_order(order)
-        if open_order.limit is not None:
-            order_identifier = order(sid(open_order.sid) , (open_order.amount - open_order.filled))
+            if unfilled_order.limit is not None:
+                order_identifier = order(context.contracts[asset], (unfilled_order.amount - unfilled_order.filled))
 
-            if order_identifier is not None:
-                context.orders[sid(open_order.sid).root_symbol].append(order_identifier)
+                if order_identifier is not None:
+                    context.orders[asset].append(order_identifier)
+                    
+                    log.info('%s limit order is turned to market order so to fill better before market close' %(asset))
 
-            cancel_order(order)
+                cancel_order(unfilled_order)
 
 
 def analyzing_trade_for_next_signal(context,data):
 
-    for market in context.prices.axes[0]:
+    for market in context.tradable_symbols:
 
-        context.price = data.current(market, 'price')
-        
-        if position_analytics[market]['state'] == 0:
-            if context.price > context.strat_one_breakout_high[market]:
+        price = data.current(market, 'price')
 
-                position_analytics[market]['state'] = 1
-                position_analytics[market]['entry'] = context.price
-                position_analytics[market]['stop']  = context.price - 2 * context.average_true_range[market]
-                position_analytics[market]['exit']  = context.strat_one_exit_low[market]
+        if context.position_analytics[market]['state'] == 0:
+            if price > context.strat_one_breakout_high[market] or price < context.strat_one_breakout_low[market]:
 
-            elif context.price < context.strat_one_breakout_low[market]:
+                context.position_analytics[market]['state'] = 1
+                context.position_analytics[market]['entry'] = price
 
-                position_analytics[market]['state'] = 1
-                position_analytics[market]['entry'] = context.price
-                position_analytics[market]['stop']  = context.price + 2 * context.average_true_range[market]
-                position_analytics[market]['exit']  = context.strat_one_exit_high[market]
-            
-        elif 0 < position_analytics[market]['state'] and position_analytics[market]['state'] < 4 and\
-            context.price > position_analytics[market]['entry'] + 0.5 * context.average_true_range[market]:
+                if price > context.strat_one_breakout_high[market]:
 
-                position_analytics[market]['state'] + 1
-                position_analytics[market]['entry'] = context.price
-                position_analytics[market]['stop']  = context.price - 2 * context.average_true_range[market]
-                position_analytics[market]['exit']  = context.strat_one_exit_high[market]
-        
-        elif -4 < position_analytics[market]['state'] and position_analytics[market]['state'] < 0 and\
-            context.price < position_analytics[market]['entry'] - 0.5 * context.average_true_range[market]:
+                    context.position_analytics[market]['stop']  = price - 2 * context.average_true_range[market]
+                    context.position_analytics[market]['exit']  = context.strat_one_exit_low[market]
 
-                position_analytics[market]['state'] - 1
-                position_analytics[market]['entry'] = context.price
-                position_analytics[market]['stop']  = context.price + 2 * context.average_true_range[market]
-                position_analytics[market]['exit']  = context.strat_one_exit_low[market]
-        
-        elif position_analytics[market]['state'] > 0 and context.price < position_analytics[market]['stop'] or\
-            position_analytics[market]['state'] < 0 and context.price > position_analytics[market]['stop']:
+                else:
+                    context.position_analytics[market]['stop']  = price + 2 * context.average_true_range[market]
+                    context.position_analytics[market]['exit']  = context.strat_one_exit_high[market]
 
-                position_analytics[market]['state'] = 0
-                position_analytics[market]['entry'] = 0
-                position_analytics[market]['stop']  = 0
-                position_analytics[market]['exit']  = 0
-        
-                previous_trade_won[market] = False
-                
-        elif position_analytics[market]['state'] > 0 and context.price < position_analytics[market]['exit']:
-        
-            profit = 0
+        elif 0 < context.position_analytics[market]['state'] and context.position_analytics[market]['state'] < 4 and\
+            price > context.position_analytics[market]['entry'] + 0.5 * context.average_true_range[market]:
 
-            x = 1
-                while x <= position_analytics[market]['state']:
-                    profit += position_analytics[market]['exit'] - \
-                              (position_analytics[market]['entry'] + (0.5) * (x-1) * context.average_true_range[market])
-                    x + 1
+                context.position_analytics[market]['state'] += 1
+                context.position_analytics[market]['entry'] = price
+                context.position_analytics[market]['stop']  = price - 2 * context.average_true_range[market]
+                context.position_analytics[market]['exit']  = context.strat_one_exit_low[market]
 
-            if profit > 0:
-                previous_trade_won[market] = True
-            elif profit < 0:
-                previous_trade_won[market] = False
+        elif -4 < context.position_analytics[market]['state'] and context.position_analytics[market]['state'] < 0 and\
+            price < context.position_analytics[market]['entry'] - 0.5 * context.average_true_range[market]:
 
-                position_analytics[market]['state'] = 0
-                position_analytics[market]['entry'] = 0
-                position_analytics[market]['stop']  = 0
-                position_analytics[market]['exit']  = 0
+                context.position_analytics[market]['state'] -= 1
+                context.position_analytics[market]['entry'] = price
+                context.position_analytics[market]['stop']  = price + 2 * context.average_true_range[market]
+                context.position_analytics[market]['exit']  = context.strat_one_exit_high[market]
 
+        elif context.position_analytics[market]['state'] > 0 and price < context.position_analytics[market]['stop'] or\
+            context.position_analytics[market]['state'] < 0 and price > context.position_analytics[market]['stop']:
 
-        elif position_analytics[market]['state'] < 0 and context.price > position_analytics[market]['exit']:
+                context.position_analytics[market] = {'state' :0, 'entry':0, 'stop' : 0, 'exit' : 0}
+                context.previous_trade_won[market] = False
+
+        elif context.position_analytics[market]['state'] > 0 and price < context.position_analytics[market]['exit']:
 
             profit = 0
 
             x = 1
-                while x <= position_analytics[market]['state']:
-                    profit += (position_analytics[market]['entry'] - (0.5) * (x-1) * context.average_true_range[market]) - \
-                               position_analytics[market]['exit']
-                              
-                    x + 1
+            while x <= context.position_analytics[market]['state']:
+                context.profit += context.position_analytics[market]['exit'] - \
+                          (context.position_analytics[market]['entry'] + (0.5) * (x-1) * context.average_true_range[market])
+                x += 1
 
             if profit > 0:
-                previous_trade_won[market] = True
+                context.previous_trade_won[market] = True
             elif profit < 0:
-                previous_trade_won[market] = False
+                context.previous_trade_won[market] = False
 
-                position_analytics[market]['state'] = 0
-                position_analytics[market]['entry'] = 0
-                position_analytics[market]['stop']  = 0
-                position_analytics[market]['exit']  = 0
+            context.position_analytics[market] = {'state' :0, 'entry':0, 'stop' : 0, 'exit' : 0}
+
+
+        elif context.position_analytics[market]['state'] < 0 and price > context.position_analytics[market]['exit']:
+
+            profit = 0
+
+            x = 1
+            while x <= context.position_analytics[market]['state']:
+                profit += (context.position_analytics[market]['entry'] - (0.5) * (x-1) * context.average_true_range[market]) - \
+                               context.position_analytics[market]['exit']
+
+                x += 1
+
+            if profit > 0:
+                context.previous_trade_won[market] = True
+            elif profit < 0:
+                context.previous_trade_won[market] = False
+
+            context.position_analytics[market] = {'state' :0, 'entry':0, 'stop' : 0, 'exit' : 0}
+
